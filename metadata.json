@@ -1,0 +1,5 @@
+{
+  "name": "OutreachPilot GUI",
+  "description": "A modern dashboard for managing Reddit outreach campaigns, configuring subreddits, and generating AI-powered personalized messages.",
+  "requestFramePermissions": []
+}
