@@ -84,6 +84,9 @@ const INITIAL_FILTERS: FilterSettings = {
   excludeKeywords: ['hiring', 'job', 'spam'],
 };
 
+// Backend API URL — set VITE_BACKEND_URL in .env.local to override
+const BACKEND_URL = (process.env.VITE_BACKEND_URL as string | undefined) || 'http://localhost:8000';
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'config' | 'personality' | 'results' | 'preferences'>('dashboard');
   const [subreddits, setSubreddits] = useState<Subreddit[]>(INITIAL_SUBREDDITS);
@@ -101,15 +104,36 @@ export default function App() {
   const [preferences, setPreferences] = useState<{ likes: string[], dislikes: string[] }>({ likes: [], dislikes: [] });
   const [ignoredList, setIgnoredList] = useState<string[]>([]);
 
+  // Backend connectivity state
+  const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
+  const [scanMode, setScanMode] = useState<'backend' | 'gemini'>('backend');
+
   useEffect(() => {
     // Default to light mode as per user request "Ich mag diese Startup-Looks nicht"
     document.documentElement.classList.toggle('dark', theme === 'dark');
   }, [theme]);
 
-  // AI Service
+  // Probe the Python backend on mount and periodically
+  useEffect(() => {
+    const checkBackend = async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/health`, { signal: AbortSignal.timeout(3000) });
+        setBackendOnline(res.ok);
+        if (res.ok) setScanMode('backend');
+      } catch {
+        setBackendOnline(false);
+        setScanMode('gemini');
+      }
+    };
+    checkBackend();
+    const id = setInterval(checkBackend, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // AI Service (Gemini — used when backend is offline)
   const ai = useMemo(() => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }), []);
 
-  const generateOutreach = async (post: Partial<OutreachResult>) => {
+  const generateOutreachGemini = async (post: Partial<OutreachResult>) => {
     try {
       const prompt = `
         Personality: ${personality.name}
@@ -149,11 +173,79 @@ export default function App() {
     }
   };
 
-  const startScan = async () => {
+  // ── Backend-powered scan (real Reddit data + OpenAI analysis) ────────────
+  const startScanBackend = async () => {
     setIsScanning(true);
     setScanProgress(0);
-    
-    // Simulate scanning subreddits
+
+    try {
+      // Start scan job on the Python backend
+      const startRes = await fetch(`${BACKEND_URL}/api/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subreddits: subreddits.map(s => ({ name: s.name, active: s.active })),
+          personality: {
+            name: personality.name,
+            description: personality.description,
+            tone: personality.tone,
+            context: personality.context,
+          },
+          filters: {
+            minKarma: filters.minKarma,
+            maxAgeHours: filters.maxAgeHours,
+            keywords: filters.keywords,
+            excludeKeywords: filters.excludeKeywords,
+          },
+        }),
+      });
+
+      if (!startRes.ok) throw new Error(`Backend error: ${startRes.status}`);
+      const { scan_id } = await startRes.json();
+
+      // Poll for results
+      let done = false;
+      const seen = new Set<string>();
+      while (!done) {
+        await new Promise(r => setTimeout(r, 2000));
+        const pollRes = await fetch(`${BACKEND_URL}/api/scan/${scan_id}`);
+        if (!pollRes.ok) break;
+        const data = await pollRes.json();
+
+        setScanProgress(data.progress ?? 0);
+
+        // Append newly arrived results
+        const fresh: OutreachResult[] = (data.results ?? [])
+          .filter((r: OutreachResult) => !seen.has(r.id))
+          .map((r: OutreachResult) => {
+            seen.add(r.id);
+            return { ...r, status: 'pending' as const };
+          });
+        if (fresh.length > 0) {
+          setResults(prev => [...fresh, ...prev]);
+        }
+
+        if (data.status === 'done' || data.status === 'error') {
+          done = true;
+          if (data.status === 'error') {
+            console.error('Backend scan error:', data.error);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Backend scan failed:', err);
+    } finally {
+      setIsScanning(false);
+      setScanProgress(100);
+      setActiveTab('results');
+    }
+  };
+
+  // ── Gemini fallback scan (mock Reddit posts + Gemini analysis) ───────────
+  const startScanGemini = async () => {
+    setIsScanning(true);
+    setScanProgress(0);
+
     const mockPosts = [
       { id: 'p1', subreddit: 'reactjs', title: 'How to build a complex dashboard?', author: 'dev_guy', content: 'I am struggling with layout and performance in my React dashboard. Any tips?', url: '#' },
       { id: 'p2', subreddit: 'webdev', title: 'Best UI library for 2024?', author: 'frontend_gal', content: 'Looking for something modern and fast. Tired of MUI.', url: '#' },
@@ -165,7 +257,7 @@ export default function App() {
     for (let i = 0; i < mockPosts.length; i++) {
       setScanProgress(((i + 1) / mockPosts.length) * 100);
       const post = mockPosts[i];
-      const aiResponse = await generateOutreach(post);
+      const aiResponse = await generateOutreachGemini(post);
       
       newResults.push({
         ...post,
@@ -176,13 +268,19 @@ export default function App() {
         timestamp: new Date().toLocaleTimeString(),
       });
       
-      // Artificial delay for realism
       await new Promise(r => setTimeout(r, 800));
     }
 
     setResults(prev => [...newResults, ...prev]);
     setIsScanning(false);
     setActiveTab('results');
+  };
+
+  const startScan = () => {
+    if (scanMode === 'backend' && backendOnline) {
+      return startScanBackend();
+    }
+    return startScanGemini();
   };
 
   return (
@@ -347,11 +445,18 @@ export default function App() {
               "hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors duration-300",
               theme === 'dark' ? "bg-gray-800/50 border-gray-700" : "bg-white border-gray-200 shadow-sm"
             )}>
-              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+              <div className={cn(
+                "w-2 h-2 rounded-full",
+                backendOnline === null ? "bg-gray-400" :
+                backendOnline ? "bg-green-500 animate-pulse" : "bg-yellow-500"
+              )} />
               <span className={cn(
                 "text-xs font-medium",
                 theme === 'dark' ? "text-gray-400" : "text-gray-500"
-              )}>Live Engine</span>
+              )}>
+                {backendOnline === null ? "Checking..." :
+                 backendOnline ? "Backend Live" : "Gemini Mode"}
+              </span>
             </div>
           </div>
         </header>
@@ -532,6 +637,83 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'personality' && (
+              <motion.div
+                key="personality"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                className="space-y-8"
+              >
+                <div className={cn(
+                  "rounded-2xl border p-8 transition-colors duration-300",
+                  theme === 'dark' ? "bg-[#161920] border-gray-800" : "bg-white border-gray-200 shadow-sm"
+                )}>
+                  <h3 className="text-xl font-bold mb-6">Outreach Personality</h3>
+                  <p className={cn(
+                    "text-sm mb-6",
+                    theme === 'dark' ? "text-gray-400" : "text-gray-500"
+                  )}>
+                    Define the voice and persona used when the AI generates outreach messages.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-400 uppercase tracking-wider">Name</span>
+                      <input
+                        type="text"
+                        value={personality.name}
+                        onChange={e => setPersonality({ ...personality, name: e.target.value })}
+                        placeholder="e.g. Helpful Expert"
+                        className={cn(
+                          "mt-2 block w-full border rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none transition-all",
+                          theme === 'dark' ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"
+                        )}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-400 uppercase tracking-wider">Tone</span>
+                      <input
+                        type="text"
+                        value={personality.tone}
+                        onChange={e => setPersonality({ ...personality, tone: e.target.value })}
+                        placeholder="e.g. Professional yet friendly"
+                        className={cn(
+                          "mt-2 block w-full border rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none transition-all",
+                          theme === 'dark' ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"
+                        )}
+                      />
+                    </label>
+                    <label className="block md:col-span-2">
+                      <span className="text-sm font-medium text-gray-400 uppercase tracking-wider">Description</span>
+                      <textarea
+                        rows={2}
+                        value={personality.description}
+                        onChange={e => setPersonality({ ...personality, description: e.target.value })}
+                        placeholder="Short bio or role description"
+                        className={cn(
+                          "mt-2 block w-full border rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none transition-all resize-none",
+                          theme === 'dark' ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"
+                        )}
+                      />
+                    </label>
+                    <label className="block md:col-span-2">
+                      <span className="text-sm font-medium text-gray-400 uppercase tracking-wider">Context &amp; Goal</span>
+                      <textarea
+                        rows={4}
+                        value={personality.context}
+                        onChange={e => setPersonality({ ...personality, context: e.target.value })}
+                        placeholder="Describe your goal and when to mention your product/service"
+                        className={cn(
+                          "mt-2 block w-full border rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none transition-all resize-none",
+                          theme === 'dark' ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"
+                        )}
+                      />
+                    </label>
                   </div>
                 </div>
               </motion.div>

@@ -1,0 +1,12 @@
+.env
+data/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+token.json
+fallback_rows.json
+*.egg-info/
+dist/
+build/

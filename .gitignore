@@ -6,3 +6,13 @@ coverage/
 *.log
 .env*
 !.env.example
+!backend/.env.example
+
+# Backend runtime data
+backend/data/
+backend/.venv/
+backend/venv/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/token.json
+backend/fallback_rows.json
