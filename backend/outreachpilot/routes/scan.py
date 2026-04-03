@@ -81,8 +81,8 @@ def _signal_to_result(sig: dict) -> dict:
         "reasoning": analysis.get("why", analysis.get("summary", "")),
         "generatedMessage": analysis.get("suggested_comment", analysis.get("suggested_reply", "")),
         "status": "pending",
-        "timestamp": datetime.datetime.utcfromtimestamp(
-            sig.get("created_utc", time.time())
+        "timestamp": datetime.datetime.fromtimestamp(
+            sig.get("created_utc", time.time()), tz=datetime.timezone.utc
         ).strftime("%H:%M") if sig.get("created_utc") else datetime.datetime.now().strftime("%H:%M"),
         # Extra fields surfaced for the expanded AI panel
         "summary": analysis.get("summary", ""),
@@ -132,7 +132,8 @@ def _run_scan(scan_id: str, subreddits: list[str], personality: dict, filters: d
 
                 age_hrs = round((time.time() - signal.created_utc) / 3600, 1) if signal.created_utc else 0
                 created_str = (
-                    datetime.datetime.utcfromtimestamp(signal.created_utc).strftime("%Y-%m-%d %H:%M")
+                    datetime.datetime.fromtimestamp(signal.created_utc, tz=datetime.timezone.utc)
+                    .strftime("%Y-%m-%d %H:%M")
                     if signal.created_utc else ""
                 )
 

@@ -3,6 +3,7 @@
 import datetime
 import json
 import logging
+import re
 from pathlib import Path
 
 from outreachpilot.config import DATA_DIR
@@ -11,16 +12,27 @@ logger = logging.getLogger(__name__)
 
 SIGNALS_DIR = DATA_DIR / "signals"
 
+# Only allow ISO date strings (YYYY-MM-DD) to prevent path traversal
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 
 def _ensure_dir():
     SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _safe_date_str(date_str: str | None) -> str:
+    """Return a validated ISO date string, defaulting to today."""
+    if date_str is None:
+        return datetime.date.today().isoformat()
+    if not _DATE_RE.match(date_str):
+        raise ValueError(f"Invalid date format: {date_str!r}. Expected YYYY-MM-DD.")
+    return date_str
+
+
 def save_signals(signals: list[dict], date_str: str | None = None) -> Path:
     """Save signals to a daily JSON file. Merges with existing data."""
     _ensure_dir()
-    if date_str is None:
-        date_str = datetime.date.today().isoformat()
+    date_str = _safe_date_str(date_str)
 
     filepath = SIGNALS_DIR / f"{date_str}.json"
 
@@ -44,8 +56,7 @@ def save_signals(signals: list[dict], date_str: str | None = None) -> Path:
 
 def load_signals(date_str: str | None = None) -> list[dict]:
     """Load signals from a daily JSON file."""
-    if date_str is None:
-        date_str = datetime.date.today().isoformat()
+    date_str = _safe_date_str(date_str)
 
     filepath = SIGNALS_DIR / f"{date_str}.json"
     if not filepath.exists():

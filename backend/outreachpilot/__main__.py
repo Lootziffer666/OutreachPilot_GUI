@@ -114,7 +114,7 @@ def cmd_scan(args):
 
                     age_hrs = round((time.time() - signal.created_utc) / 3600, 1)
                     created_str = (
-                        datetime.datetime.utcfromtimestamp(signal.created_utc)
+                        datetime.datetime.fromtimestamp(signal.created_utc, tz=datetime.timezone.utc)
                         .strftime("%Y-%m-%d %H:%M")
                         if signal.created_utc else ""
                     )
